@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(client-proxy)
+project(alpha-proxy)
 
 # Add custom options with default values set to ON
 option(WITH_IP_EXTENSION "Enable IP extension feature" ON)
@@ -22,19 +22,19 @@ endif()
 
 find_package(Boost REQUIRED COMPONENTS system)
 
-add_executable(client-proxy main.cpp server.cpp)
+add_executable(alpha-proxy main.cpp server.cpp)
 
 # Conditional compilation based on the options
 if(WITH_IP_EXTENSION)
-    target_compile_definitions(client-proxy PRIVATE WITH_IP_EXTENSION)
+    target_compile_definitions(alpha-proxy PRIVATE WITH_IP_EXTENSION)
 endif()
 
 if(ALLOW_ONLY_HAPROXY)
-    target_compile_definitions(client-proxy PRIVATE ALLOW_ONLY_HAPROXY)
+    target_compile_definitions(alpha-proxy PRIVATE ALLOW_ONLY_HAPROXY)
 endif()
 
 if(DEBUG)
-    target_compile_definitions(client-proxy PRIVATE DEBUG)
+    target_compile_definitions(alpha-proxy PRIVATE DEBUG)
 endif()
 
-target_link_libraries(client-proxy Boost::system pthread)
+target_link_libraries(alpha-proxy Boost::system pthread)
