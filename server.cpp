@@ -1,17 +1,31 @@
-//#define DEBUG
-//#define WITH_IP_EXTENSION
-//#define ALLOW_ONLY_HAPROXY
-//#define FREE_VERSION
-
 #include "server.h"
 #include <iostream>
 #include <set>
+#include <unordered_map>
 
 // SERVER
 
-std::map <uint32_t, std::weak_ptr<Session> > g_sessions;
-std::map <uint32_t, uint32_t> g_connectionsPerIp;
 int g_activeConnections = 0;
+std::unordered_map<uint32_t, std::weak_ptr<Session>> g_sessions;
+std::unordered_map<uint32_t, uint32_t> g_connectionsPerIp;
+
+#ifdef DEBUG
+static std::string getIPString(uint32_t ip)
+{
+    boost::asio::ip::address_v4 ip_address(ip);
+    // Get the IP address in its native format (little-endian)
+    boost::asio::ip::address_v4::bytes_type bytes = ip_address.to_bytes();
+
+    // Reverse the order of the bytes
+    std::reverse(bytes.begin(), bytes.end());
+
+    // Create a new IP address with the reversed bytes
+    boost::asio::ip::address_v4 reversed_ip_address(bytes);
+
+    // Get the reversed IP address as a string
+    return reversed_ip_address.to_string();
+}
+#endif
 
 Session::~Session()
 {
@@ -25,30 +39,34 @@ void Session::start(uint16_t destPort)
 #endif
     auto self(shared_from_this());
     auto endpoint = boost::asio::ip::tcp::endpoint(boost::asio::ip::address_v4::from_string("127.0.0.1"), destPort);
-    self->m_socket.async_connect(endpoint, m_strand.wrap([self, endpoint, destPort](const boost::system::error_code& ec) {
-            if (ec) {
-                std::cerr << "Can't establish connection with local server (port " << destPort << ")" << std::endl;
-                return;
-            }
+    self->m_socket.async_connect(endpoint, m_strand.wrap([self, endpoint, destPort](const boost::system::error_code &ec)
+                                                         {
+                                                             if (ec)
+                                                             {
+                                                                 std::cerr << "Can't establish connection with local server (port " << destPort << ")" << std::endl;
+                                                                 return;
+                                                             }
 #ifdef DEBUG
-            std::clog << "[Session " << self->m_id << "] connected to remote server" << std::endl;
+                                                             std::clog << "[Session " << self->m_id << "] connected to remote server" << std::endl;
 #endif
-            boost::system::error_code ecc;
-            self->m_socket.set_option(boost::asio::ip::tcp::no_delay(true), ecc);
-            self->m_socket.set_option(boost::asio::socket_base::send_buffer_size(65536), ecc);
-            self->m_socket.set_option(boost::asio::socket_base::receive_buffer_size(65536), ecc);
-            if (ecc) {
+                                                             boost::system::error_code ecc;
+                                                             self->m_socket.set_option(boost::asio::ip::tcp::no_delay(true), ecc);
+                                                             self->m_socket.set_option(boost::asio::socket_base::send_buffer_size(65536), ecc);
+                                                             self->m_socket.set_option(boost::asio::socket_base::receive_buffer_size(65536), ecc);
+                                                             if (ecc)
+                                                             {
 #ifdef DEBUG
-                std::clog << "[Session " << self->m_id << "] start error: " << ecc.message() << std::endl;
+                                                                 std::clog << "[Session " << self->m_id << "] start error: " << ecc.message() << std::endl;
 #endif
-            }
-            
+                                                             }
+
 #ifdef WITH_IP_EXTENSION
-            auto packet = std::make_shared<Packet>(6);
-            *(uint16_t*)(&(packet->data())[0]) = 0xFFFE;
-            *(uint32_t*)(&(packet->data())[2]) = self->m_ip;
-            boost::asio::async_write(self->m_socket, boost::asio::buffer(packet->data(), packet->size()),
-                                self->m_strand.wrap([self, packet, destPort](const boost::system::error_code& ecc, size_t) {
+                                                             auto packet = std::make_shared<Packet>(6);
+                                                             *(uint16_t *)(&(packet->data())[0]) = 0xFFFE;
+                                                             *(uint32_t *)(&(packet->data())[2]) = self->m_ip;
+                                                             boost::asio::async_write(self->m_socket, boost::asio::buffer(packet->data(), packet->size()),
+                                                                                      self->m_strand.wrap([self, packet, destPort](const boost::system::error_code &ecc, size_t)
+                                                                                                          {
                                     if(ecc) {
                                         std::cerr << "Can't send real IP to local server (port " << destPort << ")" << std::endl;
                                         return;                                        
@@ -59,17 +77,17 @@ void Session::start(uint16_t destPort)
                                     if (!self->m_sendQueue.empty() && self->m_sendQueue.begin()->first == self->m_inputPacketId) {
                                         boost::asio::async_write(self->m_socket, boost::asio::buffer(self->m_sendQueue.begin()->second->data(), self->m_sendQueue.begin()->second->size()),
                                             self->m_strand.wrap(std::bind(&Session::onSent, self, std::placeholders::_1, std::placeholders::_2)));
-                                    }                                    
-                                }));
+                                    } }));
 #else
-            self->m_connected = true;
-            self->readHeader();
-            if (!self->m_sendQueue.empty() && self->m_sendQueue.begin()->first == self->m_inputPacketId) {
-                boost::asio::async_write(self->m_socket, boost::asio::buffer(self->m_sendQueue.begin()->second->data(), self->m_sendQueue.begin()->second->size()),
-                    self->m_strand.wrap(std::bind(&Session::onSent, self, std::placeholders::_1, std::placeholders::_2)));
-            }    
+                                                             self->m_connected = true;
+                                                             self->readHeader();
+                                                             if (!self->m_sendQueue.empty() && self->m_sendQueue.begin()->first == self->m_inputPacketId)
+                                                             {
+                                                                 boost::asio::async_write(self->m_socket, boost::asio::buffer(self->m_sendQueue.begin()->second->data(), self->m_sendQueue.begin()->second->size()),
+                                                                                          self->m_strand.wrap(std::bind(&Session::onSent, self, std::placeholders::_1, std::placeholders::_2)));
+                                                             }
 #endif
-        }));
+                                                         }));
 }
 
 void Session::terminate()
@@ -77,8 +95,10 @@ void Session::terminate()
 #ifdef DEBUG
     std::clog << "[Session " << m_id << "] terminate" << std::endl;
 #endif
-    for (auto& it : m_proxies) {
-        if (auto proxy = it.lock()) {
+    for (auto &it : m_proxies)
+    {
+        if (auto proxy = it.lock())
+        {
             proxy->sendSessionEnd(m_id);
         }
     }
@@ -86,30 +106,27 @@ void Session::terminate()
     boost::system::error_code ec;
     m_socket.close(ec);
     g_activeConnections -= 1;
-#ifdef FREE_VERSION
-    std::cout << "Connections: " << g_activeConnections << " (limit: 200)" << std::endl;
-    if(g_activeConnections > 300) // will crash if someones try to cheat
-        terminate();
-#endif    
 }
 
 void Session::readHeader()
 {
     boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer + 14, 2),
-        m_strand.wrap(std::bind(&Session::onHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+                            m_strand.wrap(std::bind(&Session::onHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
 }
 
-void Session::onHeader(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Session::onHeader(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec || bytes_transferred != 2) {
+    if (ec || bytes_transferred != 2)
+    {
 #ifdef DEBUG
         std::clog << "[Session " << m_id << "] onHeader error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
-    
-    uint16_t packetSize = *(uint16_t*)(&m_buffer[14]);
-    if (packetSize == 0 || packetSize + 16 > BUFFER_SIZE) {
+
+    uint16_t packetSize = *(uint16_t *)(&m_buffer[14]);
+    if (packetSize == 0 || packetSize + 16 > BUFFER_SIZE)
+    {
 #ifdef DEBUG
         std::clog << "[Session " << m_id << "] wrong packet size: " << packetSize << std::endl;
 #endif
@@ -117,33 +134,28 @@ void Session::onHeader(const boost::system::error_code& ec, std::size_t bytes_tr
     }
 
     boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer + 16, packetSize),
-        m_strand.wrap(std::bind(&Session::onPacket, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+                            m_strand.wrap(std::bind(&Session::onPacket, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
 }
 
-void Session::onPacket(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Session::onPacket(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec) {
+    if (ec)
+    {
 #ifdef DEBUG
         std::clog << "[Session " << m_id << "] onPacket error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
-    
-    if(m_outputPacketId == 1) {
-#ifdef FREE_VERSION
-        std::cout << "Connections: " << g_activeConnections << " (limit: 200)" << std::endl;
-#endif        
-    }
 
     uint32_t packetId = m_outputPacketId++;
-    uint16_t packetSize = *(uint16_t*)(&m_buffer[14]);
-    *(uint16_t*)(&m_buffer[0]) = packetSize + 14;
-    *(uint32_t*)(&m_buffer[2]) = m_id;
-    *(uint32_t*)(&m_buffer[6]) = packetId;
-    *(uint32_t*)(&m_buffer[10]) = m_inputPacketId - 1;
+    uint16_t packetSize = *(uint16_t *)(&m_buffer[14]);
+    *(uint16_t *)(&m_buffer[0]) = packetSize + 14;
+    *(uint32_t *)(&m_buffer[2]) = m_id;
+    *(uint32_t *)(&m_buffer[6]) = packetId;
+    *(uint32_t *)(&m_buffer[10]) = m_inputPacketId - 1;
 
 #ifdef DEBUG
-    //std::clog << "[Session " << m_id << "] onPacket size: " << packetSize << std::endl;
+    // std::clog << "[Session " << m_id << "] onPacket size: " << packetSize << std::endl;
 #endif
 
     auto packet = std::make_shared<Packet>(m_buffer, m_buffer + 16 + packetSize);
@@ -151,8 +163,10 @@ void Session::onPacket(const boost::system::error_code& ec, std::size_t bytes_tr
 
     readHeader();
 
-    for (auto it = m_proxies.begin(); it != m_proxies.end(); ) {
-        if (auto proxy = it->lock()) {
+    for (auto it = m_proxies.begin(); it != m_proxies.end();)
+    {
+        if (auto proxy = it->lock())
+        {
             proxy->send(packet);
             ++it;
             continue;
@@ -161,13 +175,15 @@ void Session::onPacket(const boost::system::error_code& ec, std::size_t bytes_tr
     }
 }
 
-void Session::addProxy(const ProxyPtr& proxy)
+void Session::addProxy(const ProxyPtr &proxy)
 {
 #ifdef DEBUG
     std::clog << "[Session " << m_id << "] addProxy" << std::endl;
 #endif
-    for (auto it = m_proxies.begin(); it != m_proxies.end(); ) {
-        if (auto p = it->lock()) {
+    for (auto it = m_proxies.begin(); it != m_proxies.end();)
+    {
+        if (auto p = it->lock())
+        {
             if (p == proxy)
                 return;
             ++it;
@@ -177,19 +193,22 @@ void Session::addProxy(const ProxyPtr& proxy)
     }
     m_proxies.push_back(proxy);
     // send pending packets
-    for (auto& packet : m_proxySendQueue) {
+    for (auto &packet : m_proxySendQueue)
+    {
         proxy->send(packet.second);
     }
 }
 
-void Session::removeProxy(const ProxyPtr& proxy)
+void Session::removeProxy(const ProxyPtr &proxy)
 {
 #ifdef DEBUG
     std::clog << "[Session " << m_id << "] removeProxy" << std::endl;
 #endif
-    for (auto it = m_proxies.begin(); it != m_proxies.end(); ) {
-        if (auto p = it->lock()) {
-            if (p == proxy) 
+    for (auto it = m_proxies.begin(); it != m_proxies.end();)
+    {
+        if (auto p = it->lock())
+        {
+            if (p == proxy)
             {
                 it = m_proxies.erase(it);
                 continue;
@@ -201,58 +220,75 @@ void Session::removeProxy(const ProxyPtr& proxy)
     }
 }
 
-void Session::onProxyPacket(uint32_t packetId, uint32_t lastRecivedPacketId, const PacketPtr& packet)
+void Session::onProxyPacket(uint32_t packetId, uint32_t lastRecivedPacketId, const PacketPtr &packet)
 {
 #ifdef DEBUG
-    std::clog << "[Session " << m_id << "] onProxyPacket, id: " << packetId << " ("<< m_inputPacketId << ") last: " << lastRecivedPacketId <<
-        " (" << m_outputPacketId << ") size: " << packet->size() << std::endl;
+    std::clog << "[Session " << m_id << "] onProxyPacket, id: " << packetId << " (" << m_inputPacketId << ") last: " << lastRecivedPacketId << " (" << m_outputPacketId << ") size: " << packet->size() << std::endl;
 #endif
-    if (packetId < m_inputPacketId) {
+    if (packetId < m_inputPacketId)
+    {
         return;
     }
 
     auto it = m_proxySendQueue.begin();
-    while (it != m_proxySendQueue.end() && it->first <= lastRecivedPacketId) {
+    while (it != m_proxySendQueue.end() && it->first <= lastRecivedPacketId)
+    {
         it = m_proxySendQueue.erase(it);
     }
 
     bool sendNow = m_connected && (m_sendQueue.empty() || m_sendQueue.begin()->first != m_inputPacketId);
     m_sendQueue.emplace(packetId, packet);
-    if (packetId == m_inputPacketId && sendNow) {
+    if (packetId == m_inputPacketId && sendNow)
+    {
         boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()),
-            m_strand.wrap(std::bind(&Session::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+                                 m_strand.wrap(std::bind(&Session::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
     }
 }
 
-void Session::onSent(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Session::onSent(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec) {
+    if (ec)
+    {
 #ifdef DEBUG
         std::clog << "[Session " << m_id << "] onSent error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
 #ifdef DEBUG
-    //std::clog << "[Session " << m_id << "] onSent, bytes: " << bytes_transferred << std::endl;
+    // std::clog << "[Session " << m_id << "] onSent, bytes: " << bytes_transferred << std::endl;
 #endif
-    if (m_sendQueue.begin()->first != 0) {
+    if (m_sendQueue.begin()->first != 0)
+    {
         m_inputPacketId += 1;
     }
     m_sendQueue.erase(m_sendQueue.begin());
-    if (!m_sendQueue.empty() && (m_sendQueue.begin()->first == m_inputPacketId || m_sendQueue.begin()->first == 0)) {
+    if (!m_sendQueue.empty() && (m_sendQueue.begin()->first == m_inputPacketId || m_sendQueue.begin()->first == 0))
+    {
         boost::asio::async_write(m_socket, boost::asio::buffer(m_sendQueue.begin()->second->data(), m_sendQueue.begin()->second->size()),
-            m_strand.wrap(std::bind(&Session::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+                                 m_strand.wrap(std::bind(&Session::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
     }
 }
 
-
-
-Proxy::~Proxy() {
-    if(m_realIP) {
-        g_connectionsPerIp[m_ip] -= 1;
+Proxy::~Proxy()
+{
+#ifdef DEBUG
+    std::clog << "[Proxy " << m_destPort << "] Proxy::~Proxy(): m_ip = " << getIPString(m_ip) << ", m_proxy_ip = " << getIPString(m_proxy_ip) << std::endl;
+#endif
+    if (m_realIP)
+    {
+        const uint32_t newCount = --g_connectionsPerIp[m_ip];
+        if (newCount == 0)
+        {
+#ifdef DEBUG
+            std::clog << "[Proxy " << m_destPort << "] Proxy::~Proxy(): connection count from " << getIPString(m_ip) << " reached 0, erasing map key from g_connectionsPerIp" << std::endl;
+#endif
+            g_connectionsPerIp.erase(m_ip);
+        }
+#ifdef DEBUG
+        std::clog << "[Proxy " << m_destPort << "] Proxy::~Proxy(): reducing connection count by 1, new count: " << newCount << std::endl;
+#endif
     }
 }
-
 
 void Proxy::start()
 {
@@ -264,21 +300,23 @@ void Proxy::start()
 void Proxy::terminate()
 {
 #ifdef DEBUG
-    std::clog << "[Proxy " << m_destPort << "] terminate" << std::endl;
+    std::clog << "[Proxy " << m_destPort << "] terminate connection from m_ip = " << getIPString(m_ip) << ", m_proxy_ip = " << getIPString(m_proxy_ip) << std::endl;
 #endif
     boost::system::error_code ec;
     m_timer.cancel(ec);
     m_socket.close(ec);
 }
 
-void Proxy::check(const boost::system::error_code& ec)
+void Proxy::check(const boost::system::error_code &ec)
 {
-    if (ec) {
+    if (ec)
+    {
         return;
     }
 
     uint32_t lastPacket = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - m_lastPacket).count();
-    if (lastPacket > TIMEOUT) {
+    if (lastPacket > TIMEOUT)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] timeout" << std::endl;
 #endif
@@ -291,42 +329,53 @@ void Proxy::check(const boost::system::error_code& ec)
 
 void Proxy::readHeader()
 {
-    boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, 2), 
-        m_strand.wrap(std::bind(&Proxy::onHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+    boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, 2),
+                            m_strand.wrap(std::bind(&Proxy::onHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
 }
 
-void Proxy::onHeader(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Proxy::onHeader(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec || bytes_transferred != 2) {
+    if (ec || bytes_transferred != 2)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] onHeader error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
 
-    uint16_t packetSize = *(uint16_t*)m_buffer;
-    if(m_firstPacket) {
-        if(m_buffer[0] == 0x0D && m_buffer[1] == 0x0A) { // PROXY HEADER
+    uint16_t packetSize = *(uint16_t *)m_buffer;
+    if (m_firstPacket)
+    {
+        if (m_buffer[0] == 0x0D && m_buffer[1] == 0x0A)
+        { // PROXY HEADER
             m_firstPacket = false;
-            boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, 26), 
-                m_strand.wrap(std::bind(&Proxy::onProxyHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+            boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, 26),
+                                    m_strand.wrap(std::bind(&Proxy::onProxyHeader, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
             return;
-        } else {
+        }
+        else
+        {
             boost::system::error_code ec2;
             m_ip = m_socket.remote_endpoint(ec2).address().to_v4().to_ulong();
+
+#ifdef DEBUG
+            m_proxy_ip = m_ip;
+#endif
         }
     }
-    
+
 #ifdef ALLOW_ONLY_HAPROXY
-    if(m_firstPacket) {
+    if (m_firstPacket)
+    {
 #ifdef DEBUG
-        std::clog << "[Proxy " << m_destPort << "] onHeader, connection not from haproxy" << std::endl;
+        std::clog << "[Proxy " << m_destPort << "] onHeader, connection not from HAProxy" << std::endl;
 #endif
-        return terminate();        
+        return terminate();
     }
 #endif
-    
-    if (packetSize < 12 || packetSize > BUFFER_SIZE) {
+
+    if (packetSize < 12 || packetSize > BUFFER_SIZE)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] onHeader invalid size: " << packetSize << std::endl;
 #endif
@@ -334,39 +383,54 @@ void Proxy::onHeader(const boost::system::error_code& ec, std::size_t bytes_tran
     }
 
     m_firstPacket = false;
-    boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, packetSize), 
-        m_strand.wrap(std::bind(&Proxy::onPacket, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
+    boost::asio::async_read(m_socket, boost::asio::buffer(m_buffer, packetSize),
+                            m_strand.wrap(std::bind(&Proxy::onPacket, shared_from_this(), std::placeholders::_1, std::placeholders::_2)));
 }
 
-void Proxy::onProxyHeader(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Proxy::onProxyHeader(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-   if (ec || bytes_transferred != 26) {
+    if (ec || bytes_transferred != 26)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] onProxyHeader error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
-    
+
     // header has 14 bytes
-    uint32_t src_addr = *(uint32_t*)&m_buffer[14];
-    //uint32_t dst_addr = *(uint32_t*)&m_buffer[18];
-    //uint16_t src_port = *(uint32_t*)&m_buffer[22];
-    //uint16_t dst_port = *(uint32_t*)&m_buffer[24];
+    uint32_t src_addr = *(uint32_t *)&m_buffer[14];
+    // uint32_t dst_addr = *(uint32_t*)&m_buffer[18];
+    // uint16_t src_port = *(uint32_t*)&m_buffer[22];
+    // uint16_t dst_port = *(uint32_t*)&m_buffer[24];
     m_ip = src_addr;
     m_realIP = true;
 
     auto it = g_connectionsPerIp.emplace(m_ip, 0).first;
-    if(it->second > 10) {
+#ifdef DEBUG
+    boost::system::error_code ec2;
+    m_proxy_ip = m_socket.remote_endpoint(ec2).address().to_v4().to_ulong();
+    std::clog << "[Proxy " << m_destPort << "] onProxyHeader: Connections per IP: " << it->second << ", m_ip = " << getIPString(m_ip) << ", m_proxy_ip = " << getIPString(m_proxy_ip) << std::endl;
+#endif
+    if (++it->second > m_server->getMaxConnectionsPerIP())
+    {
+#ifdef DEBUG
+        std::clog << "[Proxy " << m_destPort << "] onProxyHeader: Connections per IP limit reached, terminating"
+                  << ", m_ip = " << getIPString(m_ip) << ", m_proxy_ip = " << getIPString(m_proxy_ip) << std::endl;
+#endif
         return terminate();
     }
-    it->second += 1;
-    
+
+#ifdef DEBUG
+    std::clog << "[Proxy " << m_destPort << "] onProxyHeader: Continuing with connection, connections from IP now: " << it->second << ", m_ip = " << getIPString(m_ip) << ", m_proxy_ip = " << getIPString(m_proxy_ip) << std::endl;
+#endif
+
     readHeader();
 }
 
-void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Proxy::onPacket(const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec || bytes_transferred < 12) {
+    if (ec || bytes_transferred < 12)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] onPacket error: " << ec.message() << std::endl;
 #endif
@@ -374,41 +438,41 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
     }
 
     m_lastPacket = std::chrono::high_resolution_clock::now();
-    uint32_t sessionId = *(uint32_t*)(&m_buffer[0]);
-    uint32_t packetId = *(uint32_t*)(&m_buffer[4]);
-    uint32_t lastRecivedPacketId = *(uint32_t*)(&m_buffer[8]);
+    uint32_t sessionId = *(uint32_t *)(&m_buffer[0]);
+    uint32_t packetId = *(uint32_t *)(&m_buffer[4]);
+    uint32_t lastRecivedPacketId = *(uint32_t *)(&m_buffer[8]);
 
-    if (sessionId == 0) {
+    if (sessionId == 0)
+    {
         readHeader();
         return sendPing();
     }
 
     SessionPtr session = nullptr;
     auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end()) { // create session
+    if (it != g_sessions.end())
+    { // create session
         session = it->second.lock();
-    } else if (packetId == 0) {
+    }
+    else if (packetId == 0)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] creating new session: " << sessionId << std::endl;
 #endif
         m_destPort = lastRecivedPacketId;
-#ifdef FREE_VERSION
-        if(g_activeConnections < 200 && g_activeConnections < 201) {
-#endif
-            session = std::make_shared<Session>(m_io, m_strand, sessionId, m_ip);
-            session->start(m_destPort);
-            g_sessions[sessionId] = session;
-#ifdef FREE_VERSION
-        }
-#endif
-    }   
+        session = std::make_shared<Session>(m_io, m_strand, sessionId, m_ip);
+        session->start(m_destPort);
+        g_sessions[sessionId] = session;
+    }
 
-    if (!session) {
+    if (!session)
+    {
         readHeader();
         return sendSessionEnd(sessionId);
     }
 
-    if (packetId == 0) {
+    if (packetId == 0)
+    {
         readHeader();
         return session->addProxy(shared_from_this());
     }
@@ -418,7 +482,7 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
         return session->removeProxy(shared_from_this());
     }
 
-    uint16_t packetSize = *(uint16_t*)(&m_buffer[12]);
+    uint16_t packetSize = *(uint16_t *)(&m_buffer[12]);
     auto packet = std::make_shared<Packet>(m_buffer + 12, m_buffer + 14 + packetSize);
     session->onProxyPacket(packetId, lastRecivedPacketId, packet);
     readHeader();
@@ -438,61 +502,77 @@ void Proxy::sendSessionEnd(uint32_t sessionId)
 #endif
     auto packet = std::make_shared<Packet>(14, 0);
     packet->at(0) = 12; // size = 12
-    *(uint32_t*)(&(packet->data()[2])) = sessionId;
-    *(uint32_t*)(&(packet->data()[6])) = 0xFFFFFFFFu;
+    *(uint32_t *)(&(packet->data()[2])) = sessionId;
+    *(uint32_t *)(&(packet->data()[6])) = 0xFFFFFFFFu;
     send(packet);
 }
 
-void Proxy::send(const PacketPtr& packet, bool front)
+void Proxy::send(const PacketPtr &packet, bool front)
 {
     bool sendNow = m_sendQueue.empty();
-    if(front) {
+    if (front)
+    {
         m_sendQueue.push_front(packet);
-    } else {
+    }
+    else
+    {
         m_sendQueue.push_back(packet);
     }
-    if (sendNow) {
-        boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()), 
-            m_strand.wrap(std::bind(&Proxy::onSent, shared_from_this(), packet, std::placeholders::_1, std::placeholders::_2)));
+
+    if (sendNow)
+    {
+        boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()),
+                                 m_strand.wrap(std::bind(&Proxy::onSent, shared_from_this(), packet, std::placeholders::_1, std::placeholders::_2)));
     }
 }
 
-void Proxy::onSent(PacketPtr p, const boost::system::error_code& ec, std::size_t bytes_transferred)
+void Proxy::onSent(PacketPtr p, const boost::system::error_code &ec, std::size_t bytes_transferred)
 {
-    if (ec) {
+    if (ec)
+    {
 #ifdef DEBUG
         std::clog << "[Proxy " << m_destPort << "] onSent error: " << ec.message() << std::endl;
 #endif
         return terminate();
     }
 
-    for(auto it = m_sendQueue.begin(); it != m_sendQueue.end(); ++it) {
-        if(*it == p) {
+    for (auto it = m_sendQueue.begin(); it != m_sendQueue.end(); ++it)
+    {
+        if (*it == p)
+        {
             m_sendQueue.erase(it);
             break;
         }
     }
 
 #ifdef DEBUG
-    //std::clog << "[Proxy " << m_destPort << "] onSent bytes: " << bytes_transferred << std::endl;
+    // std::clog << "[Proxy " << m_destPort << "] onSent bytes: " << bytes_transferred << std::endl;
 #endif
-    if (!m_sendQueue.empty()) {
-		auto packet = m_sendQueue.front();
+    if (!m_sendQueue.empty())
+    {
+        auto packet = m_sendQueue.front();
         boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()),
-            m_strand.wrap(std::bind(&Proxy::onSent, shared_from_this(), packet, std::placeholders::_1, std::placeholders::_2)));
+                                 m_strand.wrap(std::bind(&Proxy::onSent, shared_from_this(), packet, std::placeholders::_1, std::placeholders::_2)));
     }
+}
+
+Server::Server(uint16_t port, uint16_t maxConnectionsPerIP) : m_port(port), m_maxConnectionsPerIP(maxConnectionsPerIP), m_io(), m_strand(m_io), m_acceptor(m_io), m_timer(m_io)
+{
+    g_sessions.reserve(25000);
+    g_connectionsPerIp.reserve(10000);
 }
 
 void Server::run(size_t threads_num)
 {
     open();
     std::vector<std::thread> threads;
-    for(size_t i = 0; i < threads_num; ++i) {
-        threads.emplace_back([&] {
-            m_io.run();
-        });
+    for (size_t i = 0; i < threads_num; ++i)
+    {
+        threads.emplace_back([&]
+                             { m_io.run(); });
     }
-    for(auto& thread : threads) {
+    for (auto &thread : threads)
+    {
         thread.join();
     }
 }
@@ -506,16 +586,20 @@ void Server::open()
     boost::asio::ip::tcp::endpoint endpoint(boost::asio::ip::address_v4::any(), m_port);
     m_acceptor.close(ec);
     m_acceptor.open(endpoint.protocol(), ec);
-    if (!ec) {
+    if (!ec)
+    {
         m_acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
-        if (!ec) {
+        if (!ec)
+        {
             m_acceptor.bind(endpoint, ec);
-            if (!ec) {
+            if (!ec)
+            {
                 m_acceptor.listen(2147483647, ec);
             }
         }
     }
-    if (ec) {
+    if (ec)
+    {
         std::cerr << "Server can't bind port " << m_port << ", error: " << ec.message() << std::endl;
         std::cerr << "Retry in 1 second" << std::endl;
         m_timer.expires_from_now(std::chrono::seconds(1));
@@ -528,10 +612,10 @@ void Server::open()
 
 void Server::accept()
 {
-    auto socket = new boost::asio::ip::tcp::socket{ m_io };
+    auto socket = new boost::asio::ip::tcp::socket{m_io};
     m_acceptor.async_accept(*socket,
-        m_strand.wrap([&, socket](boost::system::error_code ec)
-        {
+                            m_strand.wrap([&, socket](boost::system::error_code ec)
+                                          {
             if (ec)
             {
                 std::cerr << "Server::accept error: " << ec.message() << std::endl;
@@ -544,7 +628,7 @@ void Server::accept()
                 return;
             }
 #ifdef DEBUG
-            std::clog << "[Server] new connection" << std::endl; 
+            std::clog << "[Server] new connection" << std::endl;
 #endif
             boost::system::error_code ecc;
             socket->set_option(boost::asio::socket_base::send_buffer_size(65536), ecc);
@@ -554,9 +638,13 @@ void Server::accept()
                 std::clog << "[Server] sock error " << ecc.message() << std::endl;
             }
 #endif
-            auto proxy = std::make_shared<Proxy>(m_io, m_strand, std::move(*socket));
+            auto proxy = std::make_shared<Proxy>(m_io, m_strand, std::move(*socket), this);
             proxy->start();
             delete socket;
-            accept();
-        }));
+            accept(); }));
+}
+
+uint16_t Server::getMaxConnectionsPerIP() const
+{
+    return m_maxConnectionsPerIP;
 }
